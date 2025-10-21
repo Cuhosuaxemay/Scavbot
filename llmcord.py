@@ -192,7 +192,9 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
         save_role_states(role_states)
         
         await interaction.followup.send(f"{member.mention} has been unshadowed and their roles have been restored.", ephemeral=True)
-        await send_mod_announcement(interaction
+        await send_mod_announcement(interaction, "Unshadow", member)
+    else:
+        await interaction.followup.send(f"{member.mention} is not currently shadowbanned.", ephemeral=True)
 
 @discord_bot.tree.command(name="ghost", description="Remove all roles and assign the ghosted role to a user (persistent)")
 @app_commands.checks.has_role(MODERATOR_ROLE_ID)
