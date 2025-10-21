@@ -11,11 +11,12 @@ from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 import httpx
 from openai import AsyncOpenAI
+import os
 import yaml
 
-import os
-
-ROLE_STATE_FILE = "role_states.yaml"
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+ROLE_STATE_FILE = os.path.join(DATA_DIR, "role_states.yaml")
 
 def load_role_states():
     if not os.path.exists(ROLE_STATE_FILE):
@@ -26,10 +27,6 @@ def load_role_states():
 def save_role_states(states):
     with open(ROLE_STATE_FILE, "w", encoding="utf-8") as f:
         yaml.safe_dump(states, f)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-)
 
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
