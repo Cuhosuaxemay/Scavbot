@@ -4,5 +4,5 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-  - ./:/app:ro           # Code is read-only
-  - ./data:/app/data     # Data folder (read-write)
+      - ./:/app:ro           # Code is read-only
+      - ./data:/app/data     # Data folder (read-write)
