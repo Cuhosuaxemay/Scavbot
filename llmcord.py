@@ -177,6 +177,10 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
 
         logging.info(f"Attempting to restore {member.name} with roles: {[r.name for r in final_roles]}")
 
+        # Remove user from role_states BEFORE restoring roles to prevent enforcement race
+        del role_states[user_id]
+        save_role_states(role_states)
+
         try:
             await member.edit(roles=final_roles, reason="Unshadowed")
         except discord.Forbidden:
@@ -187,10 +191,7 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
             logging.error(f"HTTPException while editing roles: {e}")
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
-        
-        del role_states[user_id]
-        save_role_states(role_states)
-        
+
         await interaction.followup.send(f"{member.mention} has been unshadowed and their roles have been restored.", ephemeral=True)
         await send_mod_announcement(interaction, "Unshadow", member)
     else:
@@ -244,6 +245,10 @@ async def unghost_command(interaction: discord.Interaction, member: discord.Memb
 
         logging.info(f"Attempting to restore {member.name} with roles: {[r.name for r in final_roles]}")
         
+        # Remove user from role_states BEFORE restoring roles to prevent enforcement race
+        del role_states[user_id]
+        save_role_states(role_states)
+
         try:
             await member.edit(roles=final_roles, reason="Unghosted")
         except discord.Forbidden:
@@ -255,9 +260,6 @@ async def unghost_command(interaction: discord.Interaction, member: discord.Memb
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
 
-        del role_states[user_id]
-        save_role_states(role_states)
-        
         await interaction.followup.send(f"{member.mention} has been unghosted and their roles have been restored.", ephemeral=True)
         await send_mod_announcement(interaction, "Unghost", member)
     else:
