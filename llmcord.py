@@ -160,11 +160,17 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
         original_role_ids = role_states[user_id].get("roles", [])
         logging.info(f"Found saved role IDs for {member.name}: {original_role_ids}")
 
-        # Construct the final list of roles directly from the saved IDs
         final_roles = []
+        bot_top_role = interaction.guild.me.top_role
+
         for role_id in original_role_ids:
             role = member.guild.get_role(role_id)
             if role:
+                # --- NEW HIERARCHY CHECK ---
+                if role >= bot_top_role:
+                    logging.error(f"Cannot restore role '{role.name}' for {member.name} because it is higher than my top role.")
+                    await interaction.followup.send(f":warning: I cannot restore the role `{role.name}` because it is higher than my role in the server's role list. Please adjust the role hierarchy.", ephemeral=True)
+                    return
                 final_roles.append(role)
             else:
                 logging.warning(f"Could not find role with ID {role_id} to restore for {member.name}.")
@@ -172,12 +178,13 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
         logging.info(f"Attempting to restore {member.name} with roles: {[r.name for r in final_roles]}")
 
         try:
-            # Set the member's roles to be exactly the restored list
             await member.edit(roles=final_roles, reason="Unshadowed")
         except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to edit this member's roles.", ephemeral=True)
+            logging.error("Forbidden: I lack the 'Manage Roles' permission.")
+            await interaction.followup.send("I don't have the `Manage Roles` permission to perform this action.", ephemeral=True)
             return
         except discord.HTTPException as e:
+            logging.error(f"HTTPException while editing roles: {e}")
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
         
@@ -185,9 +192,7 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
         save_role_states(role_states)
         
         await interaction.followup.send(f"{member.mention} has been unshadowed and their roles have been restored.", ephemeral=True)
-        await send_mod_announcement(interaction, "Unshadow", member)
-    else:
-        await interaction.followup.send(f"{member.mention} is not currently shadowbanned.", ephemeral=True)
+        await send_mod_announcement(interaction
 
 @discord_bot.tree.command(name="ghost", description="Remove all roles and assign the ghosted role to a user (persistent)")
 @app_commands.checks.has_role(MODERATOR_ROLE_ID)
@@ -220,11 +225,17 @@ async def unghost_command(interaction: discord.Interaction, member: discord.Memb
         original_role_ids = role_states[user_id].get("roles", [])
         logging.info(f"Found saved role IDs for {member.name}: {original_role_ids}")
 
-        # Construct the final list of roles directly from the saved IDs
         final_roles = []
+        bot_top_role = interaction.guild.me.top_role
+
         for role_id in original_role_ids:
             role = member.guild.get_role(role_id)
             if role:
+                # --- NEW HIERARCHY CHECK ---
+                if role >= bot_top_role:
+                    logging.error(f"Cannot restore role '{role.name}' for {member.name} because it is higher than my top role.")
+                    await interaction.followup.send(f":warning: I cannot restore the role `{role.name}` because it is higher than my role in the server's role list. Please adjust the role hierarchy.", ephemeral=True)
+                    return
                 final_roles.append(role)
             else:
                 logging.warning(f"Could not find role with ID {role_id} to restore for {member.name}.")
@@ -232,12 +243,13 @@ async def unghost_command(interaction: discord.Interaction, member: discord.Memb
         logging.info(f"Attempting to restore {member.name} with roles: {[r.name for r in final_roles]}")
         
         try:
-            # Set the member's roles to be exactly the restored list
             await member.edit(roles=final_roles, reason="Unghosted")
         except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to edit this member's roles.", ephemeral=True)
+            logging.error("Forbidden: I lack the 'Manage Roles' permission.")
+            await interaction.followup.send("I don't have the `Manage Roles` permission to perform this action.", ephemeral=True)
             return
         except discord.HTTPException as e:
+            logging.error(f"HTTPException while editing roles: {e}")
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
 
