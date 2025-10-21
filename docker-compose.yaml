@@ -1,8 +1,10 @@
+# docker-compose.yml
 services:
   container:
     build: .
     network_mode: host
     restart: unless-stopped
     volumes:
+      # Mount a single 'data' directory from the host to '/app/data' in the container.
+      # This is where all persistent files will live.
       - ./data:/app/data
-      - ./config.yaml:/app/config.yaml:ro
