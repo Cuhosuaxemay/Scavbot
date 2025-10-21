@@ -28,8 +28,13 @@ CONFIG_FILE = os.path.join(DATA_DIR, "config.yaml")
 ROLE_STATE_FILE = os.path.join(DATA_DIR, "role_states.yaml")
 
 # --- ROLE ID CONSTANTS ---
-MODERATOR_ROLE_ID = 1404958985882173480
+MODERATOR_ROLE_IDS = [1404958985882173480, 1093445724177432646]
 C_SUITE_ROLE_ID = 1093445724177432646
+
+def has_any_role_id(role_ids):
+    def predicate(interaction):
+        return any(role.id in role_ids for role in getattr(interaction.user, "roles", []))
+    return app_commands.check(predicate)
 
 # --- DATA HANDLING FUNCTIONS ---
 def load_role_states():
@@ -130,7 +135,7 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
 @discord_bot.tree.command(name="shadowban", description="Remove all roles and assign the shadowbanned role to a user (persistent)")
-@app_commands.checks.has_role(MODERATOR_ROLE_ID)
+@has_any_role_id(MODERATOR_ROLE_IDS)
 async def shadowban_command(interaction: discord.Interaction, member: discord.Member):
     SHADOWBAN_ROLE_NAME = "shadowbanned"
     await interaction.response.defer(ephemeral=True)
@@ -150,7 +155,7 @@ async def shadowban_command(interaction: discord.Interaction, member: discord.Me
     await send_mod_announcement(interaction, "Shadowban", member)
 
 @discord_bot.tree.command(name="unshadow", description="Restore roles to a previously shadowbanned user")
-@app_commands.checks.has_role(MODERATOR_ROLE_ID)
+@has_any_role_id(MODERATOR_ROLE_IDS)
 async def unshadow_command(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
@@ -198,7 +203,7 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
         await interaction.followup.send(f"{member.mention} is not currently shadowbanned.", ephemeral=True)
 
 @discord_bot.tree.command(name="ghost", description="Remove all roles and assign the ghosted role to a user (persistent)")
-@app_commands.checks.has_role(MODERATOR_ROLE_ID)
+@has_any_role_id(MODERATOR_ROLE_IDS)
 async def ghost_command(interaction: discord.Interaction, member: discord.Member):
     GHOST_ROLE_NAME = "ghosted"
     await interaction.response.defer(ephemeral=True)
@@ -218,7 +223,7 @@ async def ghost_command(interaction: discord.Interaction, member: discord.Member
     await send_mod_announcement(interaction, "Ghost", member)
 
 @discord_bot.tree.command(name="unghost", description="Restore roles to a previously ghosted user")
-@app_commands.checks.has_role(MODERATOR_ROLE_ID)
+@has_any_role_id(MODERATOR_ROLE_IDS)
 async def unghost_command(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
