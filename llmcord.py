@@ -12,6 +12,14 @@ import httpx
 from openai import AsyncOpenAI
 import os
 import yaml
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
 # --- DATA PATHS ---
 DATA_DIR = "/app/data"
