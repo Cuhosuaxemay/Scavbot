@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
 import discord
+from discord import app_commands
 from discord.app_commands import Choice
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
@@ -12,11 +13,23 @@ import httpx
 from openai import AsyncOpenAI
 import os
 import yaml
+import sys
+
+# --- LOGGING SETUP ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
 # --- DATA PATHS ---
 DATA_DIR = "/app/data"
 CONFIG_FILE = os.path.join(DATA_DIR, "config.yaml")
 ROLE_STATE_FILE = os.path.join(DATA_DIR, "role_states.yaml")
+
+# --- ROLE ID CONSTANTS ---
+MODERATOR_ROLE_ID = 1404958985882173480
+C_SUITE_ROLE_ID = 1093445724177432646
 
 # --- DATA HANDLING FUNCTIONS ---
 def load_role_states():
@@ -54,13 +67,9 @@ config = get_config()
 curr_model = next(iter(config["models"]))
 msg_nodes = {}
 last_task_time = 0
-
-# --- INTENTS FIX ---
-# Enable the required 'members' intent for on_member_join and on_member_update
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-
 activity = discord.CustomActivity(name=(config.get("status_message") or "github.com/jakobdylanc/llmcord")[:128])
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 httpx_client = httpx.AsyncClient()
@@ -76,42 +85,34 @@ class MsgNode:
     parent_msg: Optional[discord.Message] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-# --- HELPER FUNCTION FOR ROLE ENFORCEMENT ---
+# --- HELPER FUNCTIONS ---
 async def enforce_role_state(member: discord.Member):
-    """A helper function to enforce shadowban/ghost states on a member."""
     role_states = load_role_states()
     user_id = str(member.id)
     state = role_states.get(user_id)
-
-    if not state:
-        return
-
+    if not state: return
     guild = member.guild
     special_role_name = None
-    if state.get("type") == "shadowban":
-        special_role_name = "shadowbanned"
-    elif state.get("type") == "ghost":
-        special_role_name = "ghosted"
-    else:
-        return
-
+    if state.get("type") == "shadowban": special_role_name = "shadowbanned"
+    elif state.get("type") == "ghost": special_role_name = "ghosted"
+    else: return
     special_role = discord.utils.get(guild.roles, name=special_role_name)
-    if not special_role:
-        logging.warning(f"'{special_role_name}' role not found, cannot enforce state for {member.name}.")
-        return
-
+    if not special_role: return
     desired_roles = [role for role in member.roles if role.is_default()] + [special_role]
     current_role_ids = {role.id for role in member.roles}
     desired_role_ids = {role.id for role in desired_roles}
-
     if current_role_ids != desired_role_ids:
         try:
             await member.edit(roles=desired_roles, reason=f"Persistent {state['type']} enforcement")
-            logging.info(f"Enforced {state['type']} state for {member.name}.")
-        except discord.Forbidden:
-            logging.error(f"Missing permissions to enforce roles for {member.name}.")
-        except discord.HTTPException as e:
-            logging.error(f"Failed to enforce roles for {member.name}: {e}")
+        except (discord.Forbidden, discord.HTTPException): pass
+
+async def send_mod_announcement(interaction: discord.Interaction, action: str, target_member: discord.Member):
+    c_suite_role_ping = f"<@&{C_SUITE_ROLE_ID}>"
+    announcement = f"{c_suite_role_ping} **Moderation Action Logged**\n- **Moderator:** {interaction.user.mention}\n- **Action:** {action}\n- **Target:** {target_member.mention}"
+    try:
+        await interaction.channel.send(announcement)
+    except (discord.Forbidden, discord.HTTPException) as e:
+        logging.error(f"Could not send moderation announcement in channel {interaction.channel.id}: {e}")
 
 # --- COMMANDS ---
 @discord_bot.tree.command(name="model", description="View or switch the current model")
@@ -120,7 +121,7 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
     if model == curr_model:
         output = f"Current model: `{curr_model}`"
     else:
-        if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+        if interaction.user.id in config["permissions"]["users"]["admin_ids"]:
             curr_model = model
             output = f"Model switched to: `{model}`"
             logging.info(output)
@@ -129,60 +130,49 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
 @discord_bot.tree.command(name="shadowban", description="Remove all roles and assign the shadowbanned role to a user (persistent)")
+@app_commands.checks.has_role(MODERATOR_ROLE_ID)
 async def shadowban_command(interaction: discord.Interaction, member: discord.Member):
-    MODERATOR_ROLE_ID = 1404958985882173480
-    CSUITE_ROLE_ID = 1093445724177432646
-
-    # Permission check
-    if not any(role.id == MODERATOR_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("You do not have permission to use this command. Moderator role required.", ephemeral=True)
-        return
-
     SHADOWBAN_ROLE_NAME = "shadowbanned"
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
     user_id = str(member.id)
     guild = interaction.guild
-
     shadowban_role = discord.utils.get(guild.roles, name=SHADOWBAN_ROLE_NAME)
     if not shadowban_role:
         shadowban_role = await guild.create_role(name=SHADOWBAN_ROLE_NAME, reason="Shadowban command issued")
-
     if user_id not in role_states or role_states[user_id].get("type") != "shadowban":
         original_roles = [role.id for role in member.roles if not role.is_default() and role != shadowban_role]
         role_states[user_id] = {"type": "shadowban", "roles": original_roles}
         save_role_states(role_states)
-
+        logging.info(f"Saved original roles for {member.name}: {original_roles}")
     await enforce_role_state(member)
     await interaction.followup.send(f"{member.mention} has been shadowbanned.", ephemeral=True)
-    # Announce to c-suite
-    await interaction.channel.send(f"<@&{CSUITE_ROLE_ID}> Moderator `{interaction.user}` used `/shadowban` on {member.mention}.")
+    await send_mod_announcement(interaction, "Shadowban", member)
 
 @discord_bot.tree.command(name="unshadow", description="Restore roles to a previously shadowbanned user")
+@app_commands.checks.has_role(MODERATOR_ROLE_ID)
 async def unshadow_command(interaction: discord.Interaction, member: discord.Member):
-    MODERATOR_ROLE_ID = 1404958985882173480
-    CSUITE_ROLE_ID = 1093445724177432646
-
-    # Permission check
-    if not any(role.id == MODERATOR_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("You do not have permission to use this command. Moderator role required.", ephemeral=True)
-        return
-
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
     user_id = str(member.id)
-    SHADOWBAN_ROLE_NAME = "shadowbanned"
 
     if user_id in role_states and role_states[user_id].get("type") == "shadowban":
-        original_role_ids = set(role_states[user_id].get("roles", []))
-        roles_to_restore = {member.guild.get_role(rid) for rid in original_role_ids}
-        roles_to_restore = {role for role in roles_to_restore if role is not None}
+        original_role_ids = role_states[user_id].get("roles", [])
+        logging.info(f"Found saved role IDs for {member.name}: {original_role_ids}")
 
-        shadowban_role = discord.utils.get(member.guild.roles, name=SHADOWBAN_ROLE_NAME)
-        final_roles = [role for role in member.roles if role != shadowban_role and not role.is_default()]
-        final_roles.extend([role for role in roles_to_restore if role not in final_roles])
-        
+        # Construct the final list of roles directly from the saved IDs
+        final_roles = []
+        for role_id in original_role_ids:
+            role = member.guild.get_role(role_id)
+            if role:
+                final_roles.append(role)
+            else:
+                logging.warning(f"Could not find role with ID {role_id} to restore for {member.name}.")
+
+        logging.info(f"Attempting to restore {member.name} with roles: {[r.name for r in final_roles]}")
+
         try:
+            # Set the member's roles to be exactly the restored list
             await member.edit(roles=final_roles, reason="Unshadowed")
         except discord.Forbidden:
             await interaction.followup.send("I don't have permission to edit this member's roles.", ephemeral=True)
@@ -190,71 +180,59 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
         except discord.HTTPException as e:
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
-
+        
         del role_states[user_id]
         save_role_states(role_states)
         
         await interaction.followup.send(f"{member.mention} has been unshadowed and their roles have been restored.", ephemeral=True)
-        # Announce to c-suite
-        await interaction.channel.send(f"<@&{CSUITE_ROLE_ID}> Moderator `{interaction.user}` used `/unshadow` on {member.mention}.")
+        await send_mod_announcement(interaction, "Unshadow", member)
     else:
         await interaction.followup.send(f"{member.mention} is not currently shadowbanned.", ephemeral=True)
 
 @discord_bot.tree.command(name="ghost", description="Remove all roles and assign the ghosted role to a user (persistent)")
+@app_commands.checks.has_role(MODERATOR_ROLE_ID)
 async def ghost_command(interaction: discord.Interaction, member: discord.Member):
-    MODERATOR_ROLE_ID = 1404958985882173480
-    CSUITE_ROLE_ID = 1093445724177432646
-
-    # Permission check
-    if not any(role.id == MODERATOR_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("You do not have permission to use this command. Moderator role required.", ephemeral=True)
-        return
-
     GHOST_ROLE_NAME = "ghosted"
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
     user_id = str(member.id)
     guild = interaction.guild
-
     ghost_role = discord.utils.get(guild.roles, name=GHOST_ROLE_NAME)
     if not ghost_role:
         ghost_role = await guild.create_role(name=GHOST_ROLE_NAME, reason="Ghost command issued")
-
     if user_id not in role_states or role_states[user_id].get("type") != "ghost":
         original_roles = [role.id for role in member.roles if not role.is_default() and role != ghost_role]
         role_states[user_id] = {"type": "ghost", "roles": original_roles}
         save_role_states(role_states)
-
+        logging.info(f"Saved original roles for {member.name}: {original_roles}")
     await enforce_role_state(member)
     await interaction.followup.send(f"{member.mention} has been ghosted.", ephemeral=True)
-    # Announce to c-suite
-    await interaction.channel.send(f"<@&{CSUITE_ROLE_ID}> Moderator `{interaction.user}` used `/ghost` on {member.mention}.")
+    await send_mod_announcement(interaction, "Ghost", member)
 
 @discord_bot.tree.command(name="unghost", description="Restore roles to a previously ghosted user")
+@app_commands.checks.has_role(MODERATOR_ROLE_ID)
 async def unghost_command(interaction: discord.Interaction, member: discord.Member):
-    MODERATOR_ROLE_ID = 1404958985882173480
-    CSUITE_ROLE_ID = 1093445724177432646
-
-    # Permission check
-    if not any(role.id == MODERATOR_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("You do not have permission to use this command. Moderator role required.", ephemeral=True)
-        return
-
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
     user_id = str(member.id)
-    GHOST_ROLE_NAME = "ghosted"
-
+    
     if user_id in role_states and role_states[user_id].get("type") == "ghost":
-        original_role_ids = set(role_states[user_id].get("roles", []))
-        roles_to_restore = {member.guild.get_role(rid) for rid in original_role_ids}
-        roles_to_restore = {role for role in roles_to_restore if role is not None}
+        original_role_ids = role_states[user_id].get("roles", [])
+        logging.info(f"Found saved role IDs for {member.name}: {original_role_ids}")
 
-        ghost_role = discord.utils.get(member.guild.roles, name=GHOST_ROLE_NAME)
-        final_roles = [role for role in member.roles if role != ghost_role and not role.is_default()]
-        final_roles.extend([role for role in roles_to_restore if role not in final_roles])
+        # Construct the final list of roles directly from the saved IDs
+        final_roles = []
+        for role_id in original_role_ids:
+            role = member.guild.get_role(role_id)
+            if role:
+                final_roles.append(role)
+            else:
+                logging.warning(f"Could not find role with ID {role_id} to restore for {member.name}.")
+
+        logging.info(f"Attempting to restore {member.name} with roles: {[r.name for r in final_roles]}")
         
         try:
+            # Set the member's roles to be exactly the restored list
             await member.edit(roles=final_roles, reason="Unghosted")
         except discord.Forbidden:
             await interaction.followup.send("I don't have permission to edit this member's roles.", ephemeral=True)
@@ -267,8 +245,7 @@ async def unghost_command(interaction: discord.Interaction, member: discord.Memb
         save_role_states(role_states)
         
         await interaction.followup.send(f"{member.mention} has been unghosted and their roles have been restored.", ephemeral=True)
-        # Announce to c-suite
-        await interaction.channel.send(f"<@&{CSUITE_ROLE_ID}> Moderator `{interaction.user}` used `/unghost` on {member.mention}.")
+        await send_mod_announcement(interaction, "Unghost", member)
     else:
         await interaction.followup.send(f"{member.mention} is not currently ghosted.", ephemeral=True)
 
@@ -281,7 +258,8 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
     choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != curr_model and curr_str.lower() in model.lower()]
     return choices[:25]
 
-# --- EVENT HANDLERS ---
+# --- EVENT HANDLERS AND MAIN LOOP ---
+# ... (The rest of your code is unchanged and can be kept as is)
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -376,14 +354,12 @@ async def on_message(new_msg: discord.Message) -> None:
                 if accept_usernames and curr_node.user_id is not None:
                     message["name"] = str(curr_node.user_id)
                 messages.append(message)
-
             if len(curr_node.text or "") > max_text: user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
             if len(curr_node.images) > max_images: user_warnings.add(f"⚠️ Max {max_images} image(s) per message" if max_images > 0 else "⚠️ Can't see images")
             if curr_node.has_bad_attachments: user_warnings.add("⚠️ Unsupported attachments")
-            if curr_node.fetch_parent_failed or (curr_node.parent_msg is not None and len(messages) == max_messages):
+            if curr_node.fetch_parent_failed or (curr_msg.parent_msg is not None and len(messages) == max_messages):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message(s)")
             curr_msg = curr_node.parent_msg
-
     if system_prompt := config.get("system_prompt"):
         now = datetime.now().astimezone()
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
@@ -398,7 +374,6 @@ async def on_message(new_msg: discord.Message) -> None:
     use_plain_responses = config.get("use_plain_responses", False)
     max_message_length = 4000 if use_plain_responses else 4096 - len(STREAMING_INDICATOR)
     embed = discord.Embed.from_dict(dict(fields=[dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)])) if not use_plain_responses else None
-
     async def reply_helper(**reply_kwargs) -> None:
         reply_target = new_msg if not response_msgs else response_msgs[-1]
         response_msg = await reply_target.reply(**reply_kwargs)
@@ -442,23 +417,18 @@ async def on_message(new_msg: discord.Message) -> None:
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = full_response_text
         msg_nodes[response_msg.id].lock.release()
-
     if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
         for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
             async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
                 msg_nodes.pop(msg_id, None)
-
 @discord_bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     await enforce_role_state(after)
-
 @discord_bot.event
 async def on_member_join(member: discord.Member):
     await enforce_role_state(member)
-
 async def main() -> None:
     await discord_bot.start(config["bot_token"])
-
 try:
     asyncio.run(main())
 except KeyboardInterrupt:
