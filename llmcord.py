@@ -378,7 +378,7 @@ async def on_message(new_msg: discord.Message) -> None:
             if len(curr_node.text or "") > max_text: user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
             if len(curr_node.images) > max_images: user_warnings.add(f"⚠️ Max {max_images} image(s) per message" if max_images > 0 else "⚠️ Can't see images")
             if curr_node.has_bad_attachments: user_warnings.add("⚠️ Unsupported attachments")
-            if curr_node.fetch_parent_failed or (curr_msg.parent_msg is not None and len(messages) == max_messages):
+            if curr_node.fetch_parent_failed or (curr_node.parent_msg is not None and len(messages) == max_messages):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message(s)")
             curr_msg = curr_node.parent_msg
     if system_prompt := config.get("system_prompt"):
