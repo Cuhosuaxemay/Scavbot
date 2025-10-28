@@ -194,12 +194,15 @@ async def shadowban_command(interaction: discord.Interaction, member: discord.Me
     if not shadowban_role:
         shadowban_role = await guild.create_role(name=SHADOWBAN_ROLE_NAME, reason="Shadowban command issued")
     
-    if user_id not in role_states or role_states[user_id].get("type") != "shadowban":
+    if user_id not in role_states:
         # Save only non-managed roles
         original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != shadowban_role]
         role_states[user_id] = {"type": "shadowban", "roles": original_roles}
         save_role_states(role_states)
         logging.info(f"Saved original roles for {member.name}: {original_roles}")
+    elif role_states[user_id].get("type") != "shadowban":
+        role_states[user_id]["type"] = "shadowban"
+        save_role_states(role_states)
     
     await enforce_role_state(member)
     await interaction.followup.send(f"{member.mention} has been shadowbanned.", ephemeral=True)
@@ -222,12 +225,15 @@ async def ghost_command(interaction: discord.Interaction, member: discord.Member
     if not ghost_role:
         ghost_role = await guild.create_role(name=GHOST_ROLE_NAME, reason="Ghost command issued")
     
-    if user_id not in role_states or role_states[user_id].get("type") != "ghost":
+    if user_id not in role_states:
         # Save only non-managed roles
         original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != ghost_role]
         role_states[user_id] = {"type": "ghost", "roles": original_roles}
         save_role_states(role_states)
         logging.info(f"Saved original roles for {member.name}: {original_roles}")
+    elif role_states[user_id].get("type") != "ghost":
+        role_states[user_id]["type"] = "ghost"
+        save_role_states(role_states)
     
     await enforce_role_state(member)
     await interaction.followup.send(f"{member.mention} has been ghosted.", ephemeral=True)
