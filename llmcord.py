@@ -109,6 +109,8 @@ async def enforce_role_state(member: discord.Member):
     if current_role_ids != desired_role_ids:
         try:
             await member.edit(roles=desired_roles, reason=f"Persistent {state['type']} enforcement")
+            role_names = [role.name for role in desired_roles]
+            logging.info(f"Enforced roles for {member.name}: {role_names}")
         except (discord.Forbidden, discord.HTTPException): pass
 
 async def send_mod_announcement(interaction: discord.Interaction, action: str, target_member: discord.Member):
@@ -199,11 +201,11 @@ async def shadowban_command(interaction: discord.Interaction, member: discord.Me
         original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != shadowban_role]
         role_states[user_id] = {"type": "shadowban", "roles": original_roles}
         save_role_states(role_states)
-        logging.info(f"Saved original roles for {member.name}: {original_roles}")
+        role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
+        logging.info(f"Saved original roles for {member.name}: {role_names}")
     elif role_states[user_id].get("type") != "shadowban":
         role_states[user_id]["type"] = "shadowban"
         save_role_states(role_states)
-    
     await enforce_role_state(member)
     await interaction.followup.send(f"{member.mention} has been shadowbanned.", ephemeral=True)
     await send_mod_announcement(interaction, "Shadowban", member)
@@ -230,11 +232,12 @@ async def ghost_command(interaction: discord.Interaction, member: discord.Member
         original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != ghost_role]
         role_states[user_id] = {"type": "ghost", "roles": original_roles}
         save_role_states(role_states)
-        logging.info(f"Saved original roles for {member.name}: {original_roles}")
+        role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
+        logging.info(f"Saved original roles for {member.name}: {role_names}")
     elif role_states[user_id].get("type") != "ghost":
         role_states[user_id]["type"] = "ghost"
         save_role_states(role_states)
-    
+
     await enforce_role_state(member)
     await interaction.followup.send(f"{member.mention} has been ghosted.", ephemeral=True)
     await send_mod_announcement(interaction, "Ghost", member)
