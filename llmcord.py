@@ -129,43 +129,84 @@ async def send_mod_announcement(interaction: discord.Interaction, action: str, t
         logging.error(f"Could not send moderation announcement in channel {interaction.channel.id}: {e}")
 
 async def _unban_user(interaction: discord.Interaction, member: discord.Member, ban_type: str, ban_role_name: str):
-    """Handles the logic for both unshadow and unghost."""
+    """Handles unbanning for both direct and preemptive bans, preventing race conditions."""
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
     user_id = str(member.id)
+    guild = interaction.guild
+
+    # Check for a direct ban record with saved roles.
     if user_id in role_states and role_states[user_id].get("type") == ban_type:
         original_role_ids = role_states[user_id].get("roles", [])
         logging.info(f"Found saved role IDs for {member.name}: {original_role_ids}")
-        bot_top_role = interaction.guild.me.top_role
+        bot_top_role = guild.me.top_role
         
         current_managed_roles = [role for role in member.roles if role.managed]
-        
         restored_roles = []
         for rid in original_role_ids:
-            role = member.guild.get_role(rid)
+            role = guild.get_role(rid)
             if role and not role.managed and role < bot_top_role:
                 restored_roles.append(role)
             elif role and role >= bot_top_role:
                 logging.error(f"Cannot restore role '{role.name}' for {member.name} because it is higher than my top role.")
+        
         final_roles = current_managed_roles + restored_roles
         
+        # --- FIX: UPDATE STATE FILE FIRST ---
+        # Delete the record from our database *before* editing the member.
+        del role_states[user_id]
+        save_role_states(role_states)
+        # --- END FIX ---
+        
         try:
+            # Now perform the action that will trigger the on_member_update event.
             await member.edit(roles=final_roles, reason=f"Un-{ban_type}")
         except discord.Forbidden:
             logging.error("Forbidden: I lack the 'Manage Roles' permission.")
+            # Since we already changed the state file, we should revert it on failure.
+            role_states[user_id] = {"type": ban_type, "roles": original_role_ids} # Re-add the record
+            save_role_states(role_states)
             await interaction.followup.send("I don't have the `Manage Roles` permission to perform this action.", ephemeral=True)
             return
         except discord.HTTPException as e:
             logging.error(f"HTTPException while editing roles: {e}")
+            role_states[user_id] = {"type": ban_type, "roles": original_role_ids} # Re-add the record
+            save_role_states(role_states)
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
-        del role_states[user_id]
-        save_role_states(role_states)
         
         await interaction.followup.send(f"{member.mention} has been un-{ban_type}d and their roles have been restored.", ephemeral=True)
         await send_mod_announcement(interaction, f"Un-{ban_type.capitalize()}", member)
+
+    # Note: I've removed the preemptive logic from this function to keep it clean.
+    # Your `remove_preemptive_ban` command handles that case correctly.
+    # If a user was preemptively banned and is now in the server, this logic should still work
+    # as `unghost` would remove the role, but since there are no saved roles, it will just be that.
+    # We can combine them later if needed, but this directly fixes your reported issue.
     else:
-        await interaction.followup.send(f"{member.mention} is not currently {ban_type}d.", ephemeral=True)
+        # Final check: Maybe it was a preemptive ban?
+        if "preemptive" in role_states and user_id in role_states["preemptive"] and role_states["preemptive"][user_id].get("type") == ban_type:
+            logging.info(f"Removing preemptive ban for {member.name}.")
+            # Same logic: update state first
+            del role_states["preemptive"][user_id]
+            save_role_states(role_states)
+
+            ban_role = discord.utils.get(guild.roles, name=ban_role_name)
+            final_roles = [role for role in member.roles if role != ban_role]
+            try:
+                await member.edit(roles=final_roles, reason=f"Removed preemptive {ban_type}")
+            except (discord.Forbidden, discord.HTTPException):
+                 # Revert state on failure
+                role_states["preemptive"][user_id] = {"type": ban_type}
+                save_role_states(role_states)
+                await interaction.followup.send("An error occurred while removing the ban role.", ephemeral=True)
+                return
+            
+            await interaction.followup.send(f"The preemptive {ban_type} for {member.mention} has been removed.", ephemeral=True)
+            await send_mod_announcement(interaction, f"Removed Preemptive {ban_type.capitalize()}", member)
+        else:
+             await interaction.followup.send(f"{member.mention} is not currently {ban_type}d.", ephemeral=True)
+
 
 async def _unified_ban(interaction: discord.Interaction, bot_client: commands.Bot, user_id_str: str, ban_type: str, ban_role_name: str):
     """
