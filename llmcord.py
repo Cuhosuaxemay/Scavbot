@@ -116,9 +116,13 @@ async def enforce_role_state(member: discord.Member):
             logging.info(f"Enforced roles for {member.name}: {role_names}")
         except (discord.Forbidden, discord.HTTPException): pass
 
-async def send_mod_announcement(interaction: discord.Interaction, action: str, target_member: discord.Member):
+async def send_mod_announcement(interaction: discord.Interaction, action: str, target: discord.Member | str):
     c_suite_role_ping = f"<@&{C_SUITE_ROLE_ID}>"
-    announcement = f"{c_suite_role_ping} **Moderation Action Logged**\n- **Moderator:** {interaction.user.mention}\n- **Action:** {action}\n- **Target:** {target_member.mention}"
+    if isinstance(target, discord.Member):
+        target_mention = target.mention
+    else:
+        target_mention = f"ID: {target}"
+    announcement = f"{c_suite_role_ping} **Moderation Action Logged**\n- **Moderator:** {interaction.user.mention}\n- **Action:** {action}\n- **Target:** {target_mention}"
     try:
         await interaction.channel.send(announcement)
     except (discord.Forbidden, discord.HTTPException) as e:
@@ -273,8 +277,12 @@ async def preemptive_ban(interaction: discord.Interaction, user_id: str, ban_typ
     if user_id not in role_states["preemptive"]:
         role_states["preemptive"][user_id] = {"type": ban_type}
         save_role_states(role_states)
-        await interaction.followup.send(f"User ID {user_id} has been preemptively {ban_type}ned.", ephemeral=True)
-        await send_mod_announcement(interaction, f"Preemptive {ban_type}", interaction.guild.get_member(int(user_id)) or user_id) # type: ignore
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            await interaction.followup.send(f"{member.mention} (ID: {user_id}) has been preemptively {ban_type}ned.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"User ID {user_id} has been preemptively {ban_type}ned.", ephemeral=True)
+        await send_mod_announcement(interaction, f"Preemptive {ban_type}", member or user_id) # type: ignore
     else:
         await interaction.followup.send(f"User ID {user_id} is already preemptively banned.", ephemeral=True)
 
@@ -284,8 +292,12 @@ async def remove_preemptive_ban(interaction: discord.Interaction, user_id: str):
     if "preemptive" in role_states and user_id in role_states["preemptive"]:
         del role_states["preemptive"][user_id]
         save_role_states(role_states)
-        await interaction.followup.send(f"Preemptive ban for User ID {user_id} has been removed.", ephemeral=True)
-        await send_mod_announcement(interaction, "Remove Preemptive Ban", interaction.guild.get_member(int(user_id)) or user_id) # type: ignore
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            await interaction.followup.send(f"Preemptive ban for {member.mention} (ID: {user_id}) has been removed.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"Preemptive ban for User ID {user_id} has been removed.", ephemeral=True)
+        await send_mod_announcement(interaction, "Remove Preemptive Ban", member or user_id) # type: ignore
     else:
         await interaction.followup.send(f"User ID {user_id} is not preemptively banned.", ephemeral=True)
 
