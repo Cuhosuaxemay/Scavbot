@@ -39,13 +39,16 @@ def has_any_role_id(role_ids):
 # --- DATA HANDLING FUNCTIONS ---
 def load_role_states():
     if not os.path.exists(ROLE_STATE_FILE):
-        return {}
+        return {"preemptive": {}}
     try:
         with open(ROLE_STATE_FILE, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            data = yaml.safe_load(f) or {}
+            if "preemptive" not in data:
+                data["preemptive"] = {}
+            return data
     except (yaml.YAMLError, IOError):
         logging.exception("Error loading role_states.yaml")
-        return {}
+        return {"preemptive": {}}
 
 def save_role_states(states):
     try:
@@ -247,6 +250,45 @@ async def ghost_command(interaction: discord.Interaction, member: discord.Member
 async def unghost_command(interaction: discord.Interaction, member: discord.Member):
     await _unban_user(interaction, member, "ghost", "ghosted")
 
+@discord_bot.tree.command(name="preemptive_shadowban", description="Shadowban a user by ID, even if they are not in the server")
+@has_any_role_id(MODERATOR_ROLE_IDS)
+async def preemptive_shadowban_command(interaction: discord.Interaction, user_id: str):
+    await preemptive_ban(interaction, user_id, "shadowban")
+
+@discord_bot.tree.command(name="preemptive_ghost", description="Ghost a user by ID, even if they are not in the server")
+@has_any_role_id(MODERATOR_ROLE_IDS)
+async def preemptive_ghost_command(interaction: discord.Interaction, user_id: str):
+    await preemptive_ban(interaction, user_id, "ghost")
+
+@discord_bot.tree.command(name="remove_preemptive_ban", description="Remove a preemptive ban for a user ID")
+@has_any_role_id(MODERATOR_ROLE_IDS)
+async def remove_preemptive_ban_command(interaction: discord.Interaction, user_id: str):
+    await remove_preemptive_ban(interaction, user_id)
+
+async def preemptive_ban(interaction: discord.Interaction, user_id: str, ban_type: str):
+    await interaction.response.defer(ephemeral=True)
+    role_states = load_role_states()
+    if "preemptive" not in role_states:
+        role_states["preemptive"] = {}
+    if user_id not in role_states["preemptive"]:
+        role_states["preemptive"][user_id] = {"type": ban_type}
+        save_role_states(role_states)
+        await interaction.followup.send(f"User ID {user_id} has been preemptively {ban_type}ned.", ephemeral=True)
+        await send_mod_announcement(interaction, f"Preemptive {ban_type}", interaction.guild.get_member(int(user_id)) or user_id) # type: ignore
+    else:
+        await interaction.followup.send(f"User ID {user_id} is already preemptively banned.", ephemeral=True)
+
+async def remove_preemptive_ban(interaction: discord.Interaction, user_id: str):
+    await interaction.response.defer(ephemeral=True)
+    role_states = load_role_states()
+    if "preemptive" in role_states and user_id in role_states["preemptive"]:
+        del role_states["preemptive"][user_id]
+        save_role_states(role_states)
+        await interaction.followup.send(f"Preemptive ban for User ID {user_id} has been removed.", ephemeral=True)
+        await send_mod_announcement(interaction, "Remove Preemptive Ban", interaction.guild.get_member(int(user_id)) or user_id) # type: ignore
+    else:
+        await interaction.followup.send(f"User ID {user_id} is not preemptively banned.", ephemeral=True)
+
 @model_command.autocomplete("model")
 async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     # ... (rest of the code is unchanged)
@@ -417,6 +459,23 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 @discord_bot.event
 async def on_member_join(member: discord.Member):
+    role_states = load_role_states()
+    user_id = str(member.id)
+    if user_id in role_states.get("preemptive", {}):
+        state = role_states["preemptive"][user_id]
+        guild = member.guild
+        special_role_name = None
+        if state.get("type") == "shadowban": special_role_name = "shadowbanned"
+        elif state.get("type") == "ghost": special_role_name = "ghosted"
+        else: return
+        special_role = discord.utils.get(guild.roles, name=special_role_name)
+        if not special_role:
+            special_role = await guild.create_role(name=special_role_name, reason=f"Preemptive {state['type']} enforcement")
+        try:
+            await member.add_roles(special_role, reason=f"Preemptive {state['type']} enforcement")
+            logging.info(f"Preemptively enforced {state['type']} for {member.name}")
+        except (discord.Forbidden, discord.HTTPException):
+            logging.exception(f"Failed to preemptively enforce {state['type']} for {member.name}")
     await enforce_role_state(member)
 
 async def main() -> None:
