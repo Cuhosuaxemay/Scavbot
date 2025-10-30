@@ -128,23 +128,18 @@ async def send_mod_announcement(interaction: discord.Interaction, action: str, t
     except (discord.Forbidden, discord.HTTPException) as e:
         logging.error(f"Could not send moderation announcement in channel {interaction.channel.id}: {e}")
 
-# --- NEW: ROBUST UNBAN HELPER ---
 async def _unban_user(interaction: discord.Interaction, member: discord.Member, ban_type: str, ban_role_name: str):
     """Handles the logic for both unshadow and unghost."""
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
     user_id = str(member.id)
-
     if user_id in role_states and role_states[user_id].get("type") == ban_type:
         original_role_ids = role_states[user_id].get("roles", [])
         logging.info(f"Found saved role IDs for {member.name}: {original_role_ids}")
-
         bot_top_role = interaction.guild.me.top_role
         
-        # Preserve any managed roles (like Server Booster) the user currently has
         current_managed_roles = [role for role in member.roles if role.managed]
         
-        # Build the list of original roles to restore
         restored_roles = []
         for rid in original_role_ids:
             role = member.guild.get_role(rid)
@@ -152,8 +147,6 @@ async def _unban_user(interaction: discord.Interaction, member: discord.Member, 
                 restored_roles.append(role)
             elif role and role >= bot_top_role:
                 logging.error(f"Cannot restore role '{role.name}' for {member.name} because it is higher than my top role.")
-
-        # The final list of roles is their current managed roles + their original roles
         final_roles = current_managed_roles + restored_roles
         
         try:
@@ -166,8 +159,6 @@ async def _unban_user(interaction: discord.Interaction, member: discord.Member, 
             logging.error(f"HTTPException while editing roles: {e}")
             await interaction.followup.send(f"An error occurred while restoring roles: {e}", ephemeral=True)
             return
-
-        # ONLY update the state file AFTER the Discord action is successful
         del role_states[user_id]
         save_role_states(role_states)
         
@@ -175,6 +166,77 @@ async def _unban_user(interaction: discord.Interaction, member: discord.Member, 
         await send_mod_announcement(interaction, f"Un-{ban_type}", member)
     else:
         await interaction.followup.send(f"{member.mention} is not currently {ban_type}d.", ephemeral=True)
+
+# --- NEW: UNIFIED BAN HELPER ---
+async def _unified_ban(interaction: discord.Interaction, user_input: str, ban_type: str, ban_role_name: str):
+    """
+    Handles both direct and preemptive bans from a single command.
+    It parses a string input which can be a user ID or a mention.
+    """
+    await interaction.response.defer(ephemeral=True)
+
+    # 1. Parse the input to get a clean user ID
+    user_id_str = user_input.strip()
+    if user_id_str.startswith('<@') and user_id_str.endswith('>'):
+        user_id_str = user_id_str.strip('<@!>')
+
+    if not user_id_str.isdigit():
+        await interaction.followup.send("Invalid input. Please provide a valid user mention or user ID.", ephemeral=True)
+        return
+
+    user_id = int(user_id_str)
+    role_states = load_role_states()
+    guild = interaction.guild
+
+    # 2. Check if the user is in the server
+    member = guild.get_member(user_id)
+
+    if member:
+        # --- CASE A: User is in the server (Direct Ban) ---
+        ban_role = discord.utils.get(guild.roles, name=ban_role_name)
+        if not ban_role:
+            ban_role = await guild.create_role(name=ban_role_name, reason=f"{ban_type.capitalize()} command issued")
+        
+        if user_id_str not in role_states or role_states[user_id_str].get("type") != ban_type:
+            original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != ban_role]
+            role_states[user_id_str] = {"type": ban_type, "roles": original_roles}
+            save_role_states(role_states)
+            
+            role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
+            logging.info(f"Saved original roles for {member.name}: {role_names}")
+
+        await enforce_role_state(member)
+        await interaction.followup.send(f"{member.mention} has been {ban_type}ned.", ephemeral=True)
+        await send_mod_announcement(interaction, ban_type.capitalize(), member)
+    else:
+        # --- CASE B: User is NOT in the server (Preemptive Ban) ---
+        if "preemptive" not in role_states:
+            role_states["preemptive"] = {}
+
+        if user_id_str in role_states.get("preemptive", {}):
+             await interaction.followup.send(f"User ID {user_id_str} is already preemptively {ban_type}ned.", ephemeral=True)
+             return
+
+        role_states["preemptive"][user_id_str] = {"type": ban_type}
+        save_role_states(role_states)
+
+        await interaction.followup.send(f"User with ID `{user_id_str}` is not in the server. They have been **preemptively** {ban_type}ned and will be assigned the role if they join.", ephemeral=True)
+        await send_mod_announcement(interaction, f"Preemptive {ban_type.capitalize()}", user_id_str)
+        
+async def remove_preemptive_ban(interaction: discord.Interaction, user_id: str):
+    await interaction.response.defer(ephemeral=True)
+    role_states = load_role_states()
+    if "preemptive" in role_states and user_id in role_states["preemptive"]:
+        del role_states["preemptive"][user_id]
+        save_role_states(role_states)
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            await interaction.followup.send(f"Preemptive ban for {member.mention} (ID: {user_id}) has been removed.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"Preemptive ban for User ID {user_id} has been removed.", ephemeral=True)
+        await send_mod_announcement(interaction, "Remove Preemptive Ban", member or user_id)
+    else:
+        await interaction.followup.send(f"User ID {user_id} is not preemptively banned.", ephemeral=True)
 
 # --- COMMANDS ---
 @discord_bot.tree.command(name="model", description="View or switch the current model")
@@ -191,145 +253,41 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
             output = "You don't have permission to change the model."
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
-@discord_bot.tree.command(name="shadowban", description="Remove all roles and assign the shadowbanned role to a user (persistent)")
+@discord_bot.tree.command(name="shadowban", description="Shadowban a user by mention or ID (works even if they are not in the server)")
 @has_any_role_id(MODERATOR_ROLE_IDS)
-async def shadowban_command(interaction: discord.Interaction, member: discord.Member | str):
-    await interaction.response.defer(ephemeral=True)
-    role_states = load_role_states()
-    if isinstance(member, discord.Member):
-        user_id = str(member.id)
-    else:
-        user_id = str(member)  # Treat as user ID string
-        try:
-            member = await interaction.guild.fetch_member(int(user_id))
-        except discord.NotFound:
-            await interaction.followup.send(f"User with ID {user_id} not found in this server.", ephemeral=True)
-            return
-
-    SHADOWBAN_ROLE_NAME = "shadowbanned"
-    guild = interaction.guild
-    shadowban_role = discord.utils.get(guild.roles, name=SHADOWBAN_ROLE_NAME)
-    if not shadowban_role:
-        shadowban_role = await guild.create_role(name=SHADOWBAN_ROLE_NAME, reason="Shadowban command issued")
-
-    if isinstance(member, discord.Member):
-        if user_id not in role_states:
-            # Save only non-managed roles
-            original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != shadowban_role]
-            role_states[user_id] = {"type": "shadowban", "roles": original_roles}
-            save_role_states(role_states)
-            role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
-            logging.info(f"Saved original roles for {member.name}: {role_names}")
-        elif role_states[user_id].get("type") != "shadowban":
-            role_states[user_id]["type"] = "shadowban"
-            save_role_states(role_states)
-        await enforce_role_state(member)
-        await interaction.followup.send(f"{member.mention} has been shadowbanned.", ephemeral=True)
-        await send_mod_announcement(interaction, "Shadowban", member)
-    else:
-        await interaction.followup.send("This command requires a Discord member object, not a user ID. Use preemptive_shadowban instead.", ephemeral=True)
-        return
+async def shadowban_command(interaction: discord.Interaction, user: str):
+    """
+    Args:
+        user: The user to shadowban, as a @mention or a raw user ID.
+    """
+    await _unified_ban(interaction, user, "shadowban", "shadowbanned")
 
 @discord_bot.tree.command(name="unshadow", description="Restore roles to a previously shadowbanned user")
 @has_any_role_id(MODERATOR_ROLE_IDS)
 async def unshadow_command(interaction: discord.Interaction, member: discord.Member):
     await _unban_user(interaction, member, "shadowban", "shadowbanned")
 
-@discord_bot.tree.command(name="ghost", description="Remove all roles and assign the ghosted role to a user (persistent)")
+@discord_bot.tree.command(name="ghost", description="Ghost a user by mention or ID (works even if they are not in the server)")
 @has_any_role_id(MODERATOR_ROLE_IDS)
-async def ghost_command(interaction: discord.Interaction, member: discord.Member | str):
-    await interaction.response.defer(ephemeral=True)
-    role_states = load_role_states()
-    if isinstance(member, discord.Member):
-        user_id = str(member.id)
-    else:
-        user_id = str(member)  # Treat as user ID string
-        try:
-            member = await interaction.guild.fetch_member(int(user_id))
-        except discord.NotFound:
-            await interaction.followup.send(f"User with ID {user_id} not found in this server.", ephemeral=True)
-            return
-
-    GHOST_ROLE_NAME = "ghosted"
-    guild = interaction.guild
-    ghost_role = discord.utils.get(guild.roles, name=GHOST_ROLE_NAME)
-    if not ghost_role:
-        ghost_role = await guild.create_role(name=GHOST_ROLE_NAME, reason="Ghost command issued")
-    
-    if isinstance(member, discord.Member):
-        if user_id not in role_states:
-            # Save only non-managed roles
-            original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != ghost_role]
-            role_states[user_id] = {"type": "ghost", "roles": original_roles}
-            save_role_states(role_states)
-            role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
-            logging.info(f"Saved original roles for {member.name}: {role_names}")
-        elif role_states[user_id].get("type") != "ghost":
-            role_states[user_id]["type"] = "ghost"
-            save_role_states(role_states)
-
-        await enforce_role_state(member)
-        await interaction.followup.send(f"{member.mention} has been ghosted.", ephemeral=True)
-        await send_mod_announcement(interaction, "Ghost", member)
-    else:
-        await interaction.followup.send("This command requires a Discord member object, not a user ID. Use preemptive_ghost instead.", ephemeral=True)
-        return
+async def ghost_command(interaction: discord.Interaction, user: str):
+    """
+    Args:
+        user: The user to ghost, as a @mention or a raw user ID.
+    """
+    await _unified_ban(interaction, user, "ghost", "ghosted")
 
 @discord_bot.tree.command(name="unghost", description="Restore roles to a previously ghosted user")
 @has_any_role_id(MODERATOR_ROLE_IDS)
 async def unghost_command(interaction: discord.Interaction, member: discord.Member):
     await _unban_user(interaction, member, "ghost", "ghosted")
 
-@discord_bot.tree.command(name="preemptive_shadowban", description="Shadowban a user by ID, even if they are not in the server")
-@has_any_role_id(MODERATOR_ROLE_IDS)
-async def preemptive_shadowban_command(interaction: discord.Interaction, user_id: str):
-    await preemptive_ban(interaction, user_id, "shadowban")
-
-@discord_bot.tree.command(name="preemptive_ghost", description="Ghost a user by ID, even if they are not in the server")
-@has_any_role_id(MODERATOR_ROLE_IDS)
-async def preemptive_ghost_command(interaction: discord.Interaction, user_id: str):
-    await preemptive_ban(interaction, user_id, "ghost")
-
 @discord_bot.tree.command(name="remove_preemptive_ban", description="Remove a preemptive ban for a user ID")
 @has_any_role_id(MODERATOR_ROLE_IDS)
 async def remove_preemptive_ban_command(interaction: discord.Interaction, user_id: str):
     await remove_preemptive_ban(interaction, user_id)
 
-async def preemptive_ban(interaction: discord.Interaction, user_id: str, ban_type: str):
-    await interaction.response.defer(ephemeral=True)
-    role_states = load_role_states()
-    if "preemptive" not in role_states:
-        role_states["preemptive"] = {}
-    if user_id not in role_states["preemptive"]:
-        role_states["preemptive"][user_id] = {"type": ban_type}
-        save_role_states(role_states)
-        member = interaction.guild.get_member(int(user_id))
-        if member:
-            await interaction.followup.send(f"{member.mention} (ID: {user_id}) has been preemptively {ban_type}ned.", ephemeral=True)
-        else:
-            await interaction.followup.send(f"User ID {user_id} has been preemptively {ban_type}ned.", ephemeral=True)
-        await send_mod_announcement(interaction, f"Preemptive {ban_type}", member or user_id) # type: ignore
-    else:
-        await interaction.followup.send(f"User ID {user_id} is already preemptively banned.", ephemeral=True)
-
-async def remove_preemptive_ban(interaction: discord.Interaction, user_id: str):
-    await interaction.response.defer(ephemeral=True)
-    role_states = load_role_states()
-    if "preemptive" in role_states and user_id in role_states["preemptive"]:
-        del role_states["preemptive"][user_id]
-        save_role_states(role_states)
-        member = interaction.guild.get_member(int(user_id))
-        if member:
-            await interaction.followup.send(f"Preemptive ban for {member.mention} (ID: {user_id}) has been removed.", ephemeral=True)
-        else:
-            await interaction.followup.send(f"Preemptive ban for User ID {user_id} has been removed.", ephemeral=True)
-        await send_mod_announcement(interaction, "Remove Preemptive Ban", member or user_id) # type: ignore
-    else:
-        await interaction.followup.send(f"User ID {user_id} is not preemptively banned.", ephemeral=True)
-
 @model_command.autocomplete("model")
 async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-    # ... (rest of the code is unchanged)
     global config
     if curr_str == "":
         config = await asyncio.to_thread(get_config)
@@ -346,7 +304,6 @@ async def on_ready() -> None:
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
-    # ... (rest of the code is unchanged)
     global last_task_time
     is_dm = new_msg.channel.type == discord.ChannelType.private
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
@@ -510,6 +467,8 @@ async def on_member_join(member: discord.Member):
         if not special_role:
             special_role = await guild.create_role(name=special_role_name, reason=f"Preemptive {state['type']} enforcement")
         try:
+            # We want to remove all other roles first, then add the special role.
+            # However, new members have no roles, so just adding is fine.
             await member.add_roles(special_role, reason=f"Preemptive {state['type']} enforcement")
             logging.info(f"Preemptively enforced {state['type']} for {member.name}")
         except (discord.Forbidden, discord.HTTPException):
