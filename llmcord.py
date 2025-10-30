@@ -193,29 +193,42 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
 
 @discord_bot.tree.command(name="shadowban", description="Remove all roles and assign the shadowbanned role to a user (persistent)")
 @has_any_role_id(MODERATOR_ROLE_IDS)
-async def shadowban_command(interaction: discord.Interaction, member: discord.Member):
-    SHADOWBAN_ROLE_NAME = "shadowbanned"
+async def shadowban_command(interaction: discord.Interaction, member: discord.Member | str):
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
-    user_id = str(member.id)
+    if isinstance(member, discord.Member):
+        user_id = str(member.id)
+    else:
+        user_id = str(member)  # Treat as user ID string
+        try:
+            member = await interaction.guild.fetch_member(int(user_id))
+        except discord.NotFound:
+            await interaction.followup.send(f"User with ID {user_id} not found in this server.", ephemeral=True)
+            return
+
+    SHADOWBAN_ROLE_NAME = "shadowbanned"
     guild = interaction.guild
     shadowban_role = discord.utils.get(guild.roles, name=SHADOWBAN_ROLE_NAME)
     if not shadowban_role:
         shadowban_role = await guild.create_role(name=SHADOWBAN_ROLE_NAME, reason="Shadowban command issued")
-    
-    if user_id not in role_states:
-        # Save only non-managed roles
-        original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != shadowban_role]
-        role_states[user_id] = {"type": "shadowban", "roles": original_roles}
-        save_role_states(role_states)
-        role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
-        logging.info(f"Saved original roles for {member.name}: {role_names}")
-    elif role_states[user_id].get("type") != "shadowban":
-        role_states[user_id]["type"] = "shadowban"
-        save_role_states(role_states)
-    await enforce_role_state(member)
-    await interaction.followup.send(f"{member.mention} has been shadowbanned.", ephemeral=True)
-    await send_mod_announcement(interaction, "Shadowban", member)
+
+    if isinstance(member, discord.Member):
+        if user_id not in role_states:
+            # Save only non-managed roles
+            original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != shadowban_role]
+            role_states[user_id] = {"type": "shadowban", "roles": original_roles}
+            save_role_states(role_states)
+            role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
+            logging.info(f"Saved original roles for {member.name}: {role_names}")
+        elif role_states[user_id].get("type") != "shadowban":
+            role_states[user_id]["type"] = "shadowban"
+            save_role_states(role_states)
+        await enforce_role_state(member)
+        await interaction.followup.send(f"{member.mention} has been shadowbanned.", ephemeral=True)
+        await send_mod_announcement(interaction, "Shadowban", member)
+    else:
+        await interaction.followup.send("This command requires a Discord member object, not a user ID. Use preemptive_shadowban instead.", ephemeral=True)
+        return
 
 @discord_bot.tree.command(name="unshadow", description="Restore roles to a previously shadowbanned user")
 @has_any_role_id(MODERATOR_ROLE_IDS)
@@ -224,30 +237,43 @@ async def unshadow_command(interaction: discord.Interaction, member: discord.Mem
 
 @discord_bot.tree.command(name="ghost", description="Remove all roles and assign the ghosted role to a user (persistent)")
 @has_any_role_id(MODERATOR_ROLE_IDS)
-async def ghost_command(interaction: discord.Interaction, member: discord.Member):
-    GHOST_ROLE_NAME = "ghosted"
+async def ghost_command(interaction: discord.Interaction, member: discord.Member | str):
     await interaction.response.defer(ephemeral=True)
     role_states = load_role_states()
-    user_id = str(member.id)
+    if isinstance(member, discord.Member):
+        user_id = str(member.id)
+    else:
+        user_id = str(member)  # Treat as user ID string
+        try:
+            member = await interaction.guild.fetch_member(int(user_id))
+        except discord.NotFound:
+            await interaction.followup.send(f"User with ID {user_id} not found in this server.", ephemeral=True)
+            return
+
+    GHOST_ROLE_NAME = "ghosted"
     guild = interaction.guild
     ghost_role = discord.utils.get(guild.roles, name=GHOST_ROLE_NAME)
     if not ghost_role:
         ghost_role = await guild.create_role(name=GHOST_ROLE_NAME, reason="Ghost command issued")
     
-    if user_id not in role_states:
-        # Save only non-managed roles
-        original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != ghost_role]
-        role_states[user_id] = {"type": "ghost", "roles": original_roles}
-        save_role_states(role_states)
-        role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
-        logging.info(f"Saved original roles for {member.name}: {role_names}")
-    elif role_states[user_id].get("type") != "ghost":
-        role_states[user_id]["type"] = "ghost"
-        save_role_states(role_states)
+    if isinstance(member, discord.Member):
+        if user_id not in role_states:
+            # Save only non-managed roles
+            original_roles = [role.id for role in member.roles if not role.is_default() and not role.managed and role != ghost_role]
+            role_states[user_id] = {"type": "ghost", "roles": original_roles}
+            save_role_states(role_states)
+            role_names = [guild.get_role(role_id).name for role_id in original_roles if guild.get_role(role_id)]
+            logging.info(f"Saved original roles for {member.name}: {role_names}")
+        elif role_states[user_id].get("type") != "ghost":
+            role_states[user_id]["type"] = "ghost"
+            save_role_states(role_states)
 
-    await enforce_role_state(member)
-    await interaction.followup.send(f"{member.mention} has been ghosted.", ephemeral=True)
-    await send_mod_announcement(interaction, "Ghost", member)
+        await enforce_role_state(member)
+        await interaction.followup.send(f"{member.mention} has been ghosted.", ephemeral=True)
+        await send_mod_announcement(interaction, "Ghost", member)
+    else:
+        await interaction.followup.send("This command requires a Discord member object, not a user ID. Use preemptive_ghost instead.", ephemeral=True)
+        return
 
 @discord_bot.tree.command(name="unghost", description="Restore roles to a previously ghosted user")
 @has_any_role_id(MODERATOR_ROLE_IDS)
